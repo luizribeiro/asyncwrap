@@ -5,11 +5,24 @@
 //! - `#[blocking_impl(AsyncType)]` - Processes an impl block and generates async wrappers
 
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
+use quote::quote;
+use syn::{
+    parse::{Parse, ParseStream},
+    parse_macro_input, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Pat, ReturnType, Type,
+    Visibility,
+};
 
 /// Marks a method for async wrapper generation.
 ///
 /// This attribute should be placed on public methods within a `#[blocking_impl]` block.
 /// The method will have an async version generated in the corresponding async wrapper struct.
+///
+/// # Requirements
+///
+/// - The method must take `&self` (not `&mut self` or `self`)
+/// - All arguments must be `Send + 'static` to cross the `spawn_blocking` boundary
+/// - The method must not be async
 ///
 /// # Example
 ///
@@ -24,9 +37,170 @@ use proc_macro::TokenStream;
 /// ```
 #[proc_macro_attribute]
 pub fn async_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // This is a marker attribute - the actual processing happens in blocking_impl
-    // We just pass through the item unchanged
+    let Ok(method) = syn::parse::<ImplItemFn>(item.clone()) else {
+        return item;
+    };
+
+    if method.sig.asyncness.is_some() {
+        return syn::Error::new_spanned(
+            method.sig.asyncness,
+            "#[async_wrap] cannot be used on async methods",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    if let Some(first_arg) = method.sig.inputs.first() {
+        if !is_self_by_ref(first_arg) {
+            return syn::Error::new_spanned(
+                first_arg,
+                "#[async_wrap] requires methods taking `&self` (not `&mut self` or `self`)",
+            )
+            .to_compile_error()
+            .into();
+        }
+    } else {
+        return syn::Error::new_spanned(
+            &method.sig,
+            "#[async_wrap] requires methods taking `&self`",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     item
+}
+
+struct BlockingImplArgs {
+    async_type: Type,
+}
+
+impl Parse for BlockingImplArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let async_type: Type = input.parse()?;
+        Ok(BlockingImplArgs { async_type })
+    }
+}
+
+struct MethodInfo {
+    name: Ident,
+    visibility: Visibility,
+    args: Vec<(Ident, Type)>,
+    return_type: Option<Type>,
+    is_result: bool,
+    doc_attrs: Vec<syn::Attribute>,
+}
+
+fn has_async_wrap_attr(method: &ImplItemFn) -> bool {
+    method
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("async_wrap"))
+}
+
+fn remove_async_wrap_attr(method: &mut ImplItemFn) {
+    method
+        .attrs
+        .retain(|attr| !attr.path().is_ident("async_wrap"));
+}
+
+fn is_self_by_ref(arg: &FnArg) -> bool {
+    matches!(arg, FnArg::Receiver(r) if r.reference.is_some() && r.mutability.is_none())
+}
+
+fn is_result_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "Result";
+        }
+    }
+    false
+}
+
+fn extract_method_info(method: &ImplItemFn) -> Option<MethodInfo> {
+    let first_arg = method.sig.inputs.first()?;
+    if !is_self_by_ref(first_arg) {
+        return None;
+    }
+
+    let name = method.sig.ident.clone();
+    let visibility = method.vis.clone();
+
+    let args: Vec<(Ident, Type)> = method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
+                }
+            }
+            None
+        })
+        .collect();
+
+    let (return_type, is_result) = match &method.sig.output {
+        ReturnType::Default => (None, false),
+        ReturnType::Type(_, ty) => (Some((**ty).clone()), is_result_type(ty)),
+    };
+
+    let doc_attrs: Vec<_> = method
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("doc"))
+        .cloned()
+        .collect();
+
+    Some(MethodInfo {
+        name,
+        visibility,
+        args,
+        return_type,
+        is_result,
+        doc_attrs,
+    })
+}
+
+fn generate_async_method(info: &MethodInfo) -> TokenStream2 {
+    let name = &info.name;
+    let vis = &info.visibility;
+    let doc_attrs = &info.doc_attrs;
+    let arg_names: Vec<_> = info.args.iter().map(|(name, _)| name).collect();
+    let arg_types: Vec<_> = info.args.iter().map(|(_, ty)| ty).collect();
+
+    let spawn_call = quote! {
+        let inner = ::std::sync::Arc::clone(&self.inner);
+        ::tokio::task::spawn_blocking(move || inner.#name(#(#arg_names),*)).await
+    };
+
+    let (return_type, body) = if info.is_result {
+        let inner_return = info.return_type.as_ref().unwrap();
+        (
+            quote! { -> ::asyncwrap::AsyncWrapResult<#inner_return> },
+            quote! {
+                #spawn_call
+                    .map_err(::asyncwrap::AsyncWrapError::TaskFailed)?
+                    .map_err(::asyncwrap::AsyncWrapError::Inner)
+            },
+        )
+    } else {
+        let ret_ty = info
+            .return_type
+            .as_ref()
+            .map_or_else(|| quote! { () }, |ty| quote! { #ty });
+        (
+            quote! { -> ::core::result::Result<#ret_ty, ::tokio::task::JoinError> },
+            spawn_call,
+        )
+    };
+
+    quote! {
+        #(#doc_attrs)*
+        #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
+            #body
+        }
+    }
 }
 
 /// Processes an impl block and generates async wrappers for marked methods.
@@ -70,15 +244,46 @@ pub fn async_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn blocking_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // TODO: Implement this
-    // 1. Parse the attribute to get the async wrapper type name
-    // 2. Parse the impl block
-    // 3. Find all methods marked with #[async_wrap]
-    // 4. Generate the original impl (with #[async_wrap] attrs removed)
-    // 5. Generate an impl block for the async wrapper type
-    // 6. Return both impl blocks
+    let args = parse_macro_input!(attr as BlockingImplArgs);
+    let mut input = parse_macro_input!(item as ItemImpl);
 
-    // For now, just return the original item unchanged
-    let _ = attr; // TODO: use this
-    item
+    let async_type = &args.async_type;
+
+    let generics = &input.generics;
+    let where_clause = &input.generics.where_clause;
+    let generic_params: Vec<_> = generics.params.iter().collect();
+
+    let mut async_methods = Vec::new();
+
+    for item in &mut input.items {
+        if let ImplItem::Fn(method) = item {
+            if has_async_wrap_attr(method) {
+                if let Some(info) = extract_method_info(method) {
+                    async_methods.push(generate_async_method(&info));
+                }
+                remove_async_wrap_attr(method);
+            }
+        }
+    }
+
+    let async_impl = if generic_params.is_empty() {
+        quote! {
+            impl #async_type {
+                #(#async_methods)*
+            }
+        }
+    } else {
+        quote! {
+            impl<#(#generic_params),*> #async_type #where_clause {
+                #(#async_methods)*
+            }
+        }
+    };
+
+    let output = quote! {
+        #input
+        #async_impl
+    };
+
+    output.into()
 }
