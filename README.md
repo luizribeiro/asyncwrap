@@ -105,9 +105,24 @@ pub struct AsyncClient {
 | Use case | Strategy |
 |----------|----------|
 | Long-running blocking I/O | `spawn_blocking` |
-| Quick blocking calls | `block_in_place` |
+| Quick blocking calls (<1ms) | `block_in_place` |
 | Need to borrow data | `block_in_place` |
 | Single-threaded runtime | `spawn_blocking` |
+| Many concurrent blocking calls | `spawn_blocking` |
+
+### Performance considerations
+
+**`spawn_blocking`**:
+- Has thread pool overhead (~microseconds per call)
+- Better for long operations — keeps async executor threads free
+- Handles backpressure via thread pool limits
+- Panics in blocking code don't crash the executor
+
+**`block_in_place`**:
+- Zero overhead — runs directly on current thread
+- Can starve other tasks if blocking takes too long
+- Avoid for operations >10ms or unbounded I/O
+- Panics propagate directly to the caller
 
 ## Return Types
 
