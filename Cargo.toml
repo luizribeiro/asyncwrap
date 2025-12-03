@@ -1,0 +1,10 @@
+[workspace]
+members = ["asyncwrap", "asyncwrap-macros", "tests"]
+resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

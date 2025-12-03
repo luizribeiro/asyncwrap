@@ -1,0 +1,15 @@
+[package]
+name = "asyncwrap"
+version = "0.1.0"
+edition = "2021"
+description = "Auto-generate async wrappers for blocking code via proc macros"
+license = "MIT OR Apache-2.0"
+keywords = ["async", "blocking", "tokio", "macro", "wrapper"]
+categories = ["asynchronous", "development-tools::procedural-macro-helpers"]
+
+[dependencies]
+asyncwrap-macros = { path = "../asyncwrap-macros", version = "0.1.0" }
+tokio = { version = "1", features = ["rt"] }
+
+[lints]
+workspace = true

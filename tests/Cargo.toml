@@ -1,0 +1,13 @@
+[package]
+name = "asyncwrap-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+asyncwrap = { path = "../asyncwrap" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+thiserror = "1"
+
+[lints]
+workspace = true
