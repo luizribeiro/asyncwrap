@@ -9,9 +9,16 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Pat, ReturnType, Type,
+    parse_macro_input, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Pat, ReturnType, Token, Type,
     Visibility,
 };
+
+#[derive(Clone, Copy, Default)]
+enum Strategy {
+    #[default]
+    SpawnBlocking,
+    BlockInPlace,
+}
 
 /// Marks a method for async wrapper generation.
 ///
@@ -73,12 +80,41 @@ pub fn async_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct BlockingImplArgs {
     async_type: Type,
+    strategy: Strategy,
 }
 
 impl Parse for BlockingImplArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let async_type: Type = input.parse()?;
-        Ok(BlockingImplArgs { async_type })
+
+        let mut strategy = Strategy::default();
+
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            let ident: Ident = input.parse()?;
+            if ident != "strategy" {
+                return Err(syn::Error::new_spanned(ident, "expected `strategy`"));
+            }
+            input.parse::<Token![=]>()?;
+            let value: syn::LitStr = input.parse()?;
+            strategy = match value.value().as_str() {
+                "spawn_blocking" => Strategy::SpawnBlocking,
+                "block_in_place" => Strategy::BlockInPlace,
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        value,
+                        format!(
+                            "unknown strategy \"{other}\", expected \"spawn_blocking\" or \"block_in_place\""
+                        ),
+                    ))
+                }
+            };
+        }
+
+        Ok(BlockingImplArgs {
+            async_type,
+            strategy,
+        })
     }
 }
 
@@ -162,43 +198,60 @@ fn extract_method_info(method: &ImplItemFn) -> Option<MethodInfo> {
     })
 }
 
-fn generate_async_method(info: &MethodInfo) -> TokenStream2 {
+fn generate_async_method(info: &MethodInfo, strategy: Strategy) -> TokenStream2 {
     let name = &info.name;
     let vis = &info.visibility;
     let doc_attrs = &info.doc_attrs;
     let arg_names: Vec<_> = info.args.iter().map(|(name, _)| name).collect();
     let arg_types: Vec<_> = info.args.iter().map(|(_, ty)| ty).collect();
 
-    let spawn_call = quote! {
-        let inner = ::std::sync::Arc::clone(&self.inner);
-        ::tokio::task::spawn_blocking(move || inner.#name(#(#arg_names),*)).await
-    };
+    match strategy {
+        Strategy::SpawnBlocking => {
+            let spawn_call = quote! {
+                let inner = ::std::sync::Arc::clone(&self.inner);
+                ::tokio::task::spawn_blocking(move || inner.#name(#(#arg_names),*)).await
+            };
 
-    let (return_type, body) = if info.is_result {
-        let inner_return = info.return_type.as_ref().unwrap();
-        (
-            quote! { -> ::asyncwrap::AsyncWrapResult<#inner_return> },
+            let (return_type, body) = if info.is_result {
+                let inner_return = info.return_type.as_ref().unwrap();
+                (
+                    quote! { -> ::asyncwrap::AsyncWrapResult<#inner_return> },
+                    quote! {
+                        #spawn_call
+                            .map_err(::asyncwrap::AsyncWrapError::TaskFailed)?
+                            .map_err(::asyncwrap::AsyncWrapError::Inner)
+                    },
+                )
+            } else {
+                let ret_ty = info
+                    .return_type
+                    .as_ref()
+                    .map_or_else(|| quote! { () }, |ty| quote! { #ty });
+                (
+                    quote! { -> ::core::result::Result<#ret_ty, ::tokio::task::JoinError> },
+                    spawn_call,
+                )
+            };
+
             quote! {
-                #spawn_call
-                    .map_err(::asyncwrap::AsyncWrapError::TaskFailed)?
-                    .map_err(::asyncwrap::AsyncWrapError::Inner)
-            },
-        )
-    } else {
-        let ret_ty = info
-            .return_type
-            .as_ref()
-            .map_or_else(|| quote! { () }, |ty| quote! { #ty });
-        (
-            quote! { -> ::core::result::Result<#ret_ty, ::tokio::task::JoinError> },
-            spawn_call,
-        )
-    };
+                #(#doc_attrs)*
+                #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
+                    #body
+                }
+            }
+        }
+        Strategy::BlockInPlace => {
+            let return_type = info
+                .return_type
+                .as_ref()
+                .map(|ty| quote! { -> #ty });
 
-    quote! {
-        #(#doc_attrs)*
-        #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
-            #body
+            quote! {
+                #(#doc_attrs)*
+                #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
+                    ::tokio::task::block_in_place(|| self.inner.#name(#(#arg_names),*))
+                }
+            }
         }
     }
 }
@@ -259,7 +312,7 @@ pub fn blocking_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         if let ImplItem::Fn(method) = item {
             if has_async_wrap_attr(method) {
                 if let Some(info) = extract_method_info(method) {
-                    async_methods.push(generate_async_method(&info));
+                    async_methods.push(generate_async_method(&info, args.strategy));
                 }
                 remove_async_wrap_attr(method);
             }

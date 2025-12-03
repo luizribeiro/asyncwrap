@@ -5,6 +5,99 @@
 use asyncwrap::blocking_impl;
 use std::sync::Arc;
 
+mod block_in_place_strategy {
+    use asyncwrap::blocking_impl;
+    use thiserror::Error;
+
+    struct BlockingService {
+        value: i32,
+    }
+
+    #[blocking_impl(AsyncService, strategy = "block_in_place")]
+    impl BlockingService {
+        #[async_wrap]
+        pub fn get_value(&self) -> i32 {
+            self.value
+        }
+
+        #[async_wrap]
+        pub fn add(&self, n: i32) -> i32 {
+            self.value + n
+        }
+    }
+
+    pub struct AsyncService {
+        inner: BlockingService,
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_basic_block_in_place() {
+        let async_svc = AsyncService {
+            inner: BlockingService { value: 42 },
+        };
+
+        assert_eq!(async_svc.get_value().await, 42);
+        assert_eq!(async_svc.add(8).await, 50);
+    }
+
+    #[derive(Error, Debug, PartialEq)]
+    enum MyError {
+        #[error("something failed")]
+        Failed,
+    }
+
+    struct BlockingClient;
+
+    #[blocking_impl(AsyncClient, strategy = "block_in_place")]
+    impl BlockingClient {
+        #[async_wrap]
+        pub fn might_fail(&self, succeed: bool) -> Result<String, MyError> {
+            if succeed {
+                Ok("success".to_string())
+            } else {
+                Err(MyError::Failed)
+            }
+        }
+    }
+
+    pub struct AsyncClient {
+        inner: BlockingClient,
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_result_types_preserved() {
+        let client = AsyncClient {
+            inner: BlockingClient,
+        };
+
+        let ok_result: Result<String, MyError> = client.might_fail(true).await;
+        assert_eq!(ok_result.unwrap(), "success");
+
+        let err_result: Result<String, MyError> = client.might_fail(false).await;
+        assert_eq!(err_result.unwrap_err(), MyError::Failed);
+    }
+
+    struct UnitService;
+
+    #[blocking_impl(AsyncUnitService, strategy = "block_in_place")]
+    impl UnitService {
+        #[async_wrap]
+        pub fn do_nothing(&self) {}
+    }
+
+    pub struct AsyncUnitService {
+        inner: UnitService,
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_unit_return() {
+        let svc = AsyncUnitService {
+            inner: UnitService,
+        };
+        svc.do_nothing().await;
+    }
+}
+
 mod basic_wrapping {
     use super::*;
 

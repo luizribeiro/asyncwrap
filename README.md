@@ -62,11 +62,56 @@ cargo add asyncwrap
 
 1. `#[blocking_impl(AsyncType)]` processes your impl block
 2. `#[async_wrap]` marks which methods should get async wrappers
-3. The macro generates an `impl AsyncType` with async versions that use `spawn_blocking`
+3. The macro generates an `impl AsyncType` with async versions
+
+## Strategies
+
+Choose how blocking code is executed with the `strategy` parameter:
+
+### `spawn_blocking` (default)
+
+```rust
+#[blocking_impl(AsyncClient)]  // or explicitly: strategy = "spawn_blocking"
+impl BlockingClient { /* ... */ }
+
+pub struct AsyncClient {
+    inner: Arc<BlockingClient>,  // Arc required
+}
+```
+
+- Runs blocking code on a dedicated thread pool
+- Arguments must be `Send + 'static`
+- Wraps return types: `T` → `Result<T, JoinError>`, `Result<T, E>` → `Result<T, AsyncWrapError<E>>`
+
+### `block_in_place`
+
+```rust
+#[blocking_impl(AsyncClient, strategy = "block_in_place")]
+impl BlockingClient { /* ... */ }
+
+pub struct AsyncClient {
+    inner: BlockingClient,  // No Arc needed!
+}
+```
+
+- Runs blocking code on the current thread (tells tokio to move other tasks)
+- **No `'static` requirement** — you can borrow data
+- **No `Arc` needed** — simpler struct definition
+- **Return types preserved exactly** — no wrapping
+- Requires tokio multi-threaded runtime
+
+### When to use which?
+
+| Use case | Strategy |
+|----------|----------|
+| Long-running blocking I/O | `spawn_blocking` |
+| Quick blocking calls | `block_in_place` |
+| Need to borrow data | `block_in_place` |
+| Single-threaded runtime | `spawn_blocking` |
 
 ## Return Types
 
-The async wrapper transforms return types as follows:
+With `spawn_blocking` (default), return types are wrapped:
 
 | Blocking Return Type | Async Return Type |
 |---------------------|-------------------|
@@ -74,13 +119,13 @@ The async wrapper transforms return types as follows:
 | `T` (non-Result) | `Result<T, JoinError>` |
 | `()` | `Result<(), JoinError>` |
 
-`AsyncWrapError<E>` wraps either the original error or a `tokio::task::JoinError` (if the task panicked or was cancelled).
+With `block_in_place`, return types are **preserved exactly**.
 
 ## Requirements
 
 - Methods must take `&self` (not `&mut self` or `self`)
-- Arguments must be `Send + 'static` to cross the spawn_blocking boundary
-- Your async struct must have a field `inner: Arc<BlockingType>`
+- For `spawn_blocking`: arguments must be `Send + 'static`, struct needs `inner: Arc<BlockingType>`
+- For `block_in_place`: struct needs `inner: BlockingType`, requires multi-threaded runtime
 
 ## Generics
 
