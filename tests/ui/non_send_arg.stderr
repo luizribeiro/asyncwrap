@@ -1,0 +1,24 @@
+error[E0277]: `Rc<i32>` cannot be sent between threads safely
+ --> ui/non_send_arg.rs:6:1
+  |
+6 | #[blocking_impl(AsyncClient)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | |
+  | `Rc<i32>` cannot be sent between threads safely
+  | within this `{closure@$DIR/ui/non_send_arg.rs:6:1: 6:30}`
+  |
+  = help: within `{closure@$DIR/ui/non_send_arg.rs:6:1: 6:30}`, the trait `Send` is not implemented for `Rc<i32>`
+note: required because it's used within this closure
+ --> ui/non_send_arg.rs:6:1
+  |
+6 | #[blocking_impl(AsyncClient)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `spawn_blocking`
+ --> $CARGO/tokio-$VERSION/src/task/blocking.rs
+  |
+  |     pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
+  |            -------------- required by a bound in this function
+  |     where
+  |         F: FnOnce() -> R + Send + 'static,
+  |                            ^^^^ required by this bound in `spawn_blocking`
+  = note: this error originates in the attribute macro `blocking_impl` (in Nightly builds, run with -Z macro-backtrace for more info)

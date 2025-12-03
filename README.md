@@ -127,6 +127,18 @@ With `block_in_place`, return types are **preserved exactly**.
 - For `spawn_blocking`: arguments must be `Send + 'static`, struct needs `inner: Arc<BlockingType>`
 - For `block_in_place`: struct needs `inner: BlockingType`, requires multi-threaded runtime
 
+### Non-Send types with `spawn_blocking`
+
+With the default `spawn_blocking` strategy, arguments are moved to a separate thread. Types like `Rc<T>`, `&T`, or anything not `Send + 'static` will fail to compile:
+
+```rust
+// This won't compile - Rc is not Send
+#[async_wrap]
+pub fn with_rc(&self, rc: Rc<i32>) -> i32 { *rc }
+```
+
+If you need to pass non-Send types, use `strategy = "block_in_place"` instead.
+
 ## Generics
 
 Generic types are supported:
