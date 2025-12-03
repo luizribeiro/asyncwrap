@@ -58,6 +58,7 @@ pub fn async_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
 struct BlockingImplArgs {
     async_type: Type,
     strategy: Strategy,
+    field: Ident,
 }
 
 impl Parse for BlockingImplArgs {
@@ -65,32 +66,42 @@ impl Parse for BlockingImplArgs {
         let async_type: Type = input.parse()?;
 
         let mut strategy = Strategy::default();
+        let mut field = Ident::new("inner", proc_macro2::Span::call_site());
 
-        if input.peek(Token![,]) {
+        while input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             let ident: Ident = input.parse()?;
-            if ident != "strategy" {
-                return Err(syn::Error::new_spanned(ident, "expected `strategy`"));
-            }
             input.parse::<Token![=]>()?;
-            let value: syn::LitStr = input.parse()?;
-            strategy = match value.value().as_str() {
-                "spawn_blocking" => Strategy::SpawnBlocking,
-                "block_in_place" => Strategy::BlockInPlace,
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        value,
-                        format!(
-                            "unknown strategy \"{other}\", expected \"spawn_blocking\" or \"block_in_place\""
-                        ),
-                    ))
-                }
-            };
+
+            if ident == "strategy" {
+                let value: syn::LitStr = input.parse()?;
+                strategy = match value.value().as_str() {
+                    "spawn_blocking" => Strategy::SpawnBlocking,
+                    "block_in_place" => Strategy::BlockInPlace,
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            value,
+                            format!(
+                                "unknown strategy \"{other}\", expected \"spawn_blocking\" or \"block_in_place\""
+                            ),
+                        ))
+                    }
+                };
+            } else if ident == "field" {
+                let value: syn::LitStr = input.parse()?;
+                field = Ident::new(&value.value(), value.span());
+            } else {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    "expected `strategy` or `field`",
+                ));
+            }
         }
 
         Ok(BlockingImplArgs {
             async_type,
             strategy,
+            field,
         })
     }
 }
@@ -204,7 +215,7 @@ fn extract_method_info(method: &ImplItemFn) -> Option<MethodInfo> {
     })
 }
 
-fn generate_async_method(info: &MethodInfo, strategy: Strategy) -> TokenStream2 {
+fn generate_async_method(info: &MethodInfo, strategy: Strategy, field: &Ident) -> TokenStream2 {
     let name = &info.name;
     let vis = &info.visibility;
     let doc_attrs = &info.doc_attrs;
@@ -214,8 +225,8 @@ fn generate_async_method(info: &MethodInfo, strategy: Strategy) -> TokenStream2 
     match strategy {
         Strategy::SpawnBlocking => {
             let spawn_call = quote! {
-                let inner = ::std::sync::Arc::clone(&self.inner);
-                ::tokio::task::spawn_blocking(move || inner.#name(#(#arg_names),*)).await
+                let __asyncwrap_inner = ::std::sync::Arc::clone(&self.#field);
+                ::tokio::task::spawn_blocking(move || __asyncwrap_inner.#name(#(#arg_names),*)).await
             };
 
             let (return_type, body) = if info.is_result {
@@ -255,7 +266,7 @@ fn generate_async_method(info: &MethodInfo, strategy: Strategy) -> TokenStream2 
             quote! {
                 #(#doc_attrs)*
                 #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
-                    ::tokio::task::block_in_place(|| self.inner.#name(#(#arg_names),*))
+                    ::tokio::task::block_in_place(|| self.#field.#name(#(#arg_names),*))
                 }
             }
         }
@@ -321,7 +332,7 @@ pub fn blocking_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if let Err(e) = validate_async_wrap_method(method) {
                     errors.push(e);
                 } else if let Some(info) = extract_method_info(method) {
-                    async_methods.push(generate_async_method(&info, args.strategy));
+                    async_methods.push(generate_async_method(&info, args.strategy, &args.field));
                 }
                 remove_async_wrap_attr(method);
             }

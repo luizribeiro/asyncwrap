@@ -121,11 +121,32 @@ With `spawn_blocking` (default), return types are wrapped:
 
 With `block_in_place`, return types are **preserved exactly**.
 
+## Configuration
+
+### Custom field name
+
+By default, the macro expects a field named `inner`. Use the `field` parameter to customize:
+
+```rust
+#[blocking_impl(AsyncClient, field = "client")]
+impl BlockingClient { /* ... */ }
+
+pub struct AsyncClient {
+    client: Arc<BlockingClient>,  // Custom field name
+}
+```
+
+You can combine with strategy:
+
+```rust
+#[blocking_impl(AsyncClient, strategy = "block_in_place", field = "client")]
+```
+
 ## Requirements
 
 - Methods must take `&self` (not `&mut self` or `self`)
-- For `spawn_blocking`: arguments must be `Send + 'static`, struct needs `inner: Arc<BlockingType>`
-- For `block_in_place`: struct needs `inner: BlockingType`, requires multi-threaded runtime
+- For `spawn_blocking`: arguments must be `Send + 'static`, struct needs `inner: Arc<BlockingType>` (or custom field)
+- For `block_in_place`: struct needs `inner: BlockingType` (or custom field), requires multi-threaded runtime
 
 ### Non-Send types with `spawn_blocking`
 

@@ -98,6 +98,57 @@ mod block_in_place_strategy {
     }
 }
 
+mod custom_field_name {
+    use asyncwrap::blocking_impl;
+    use std::sync::Arc;
+
+    struct BlockingClient {
+        value: i32,
+    }
+
+    #[blocking_impl(AsyncClient, field = "client")]
+    impl BlockingClient {
+        #[async_wrap]
+        pub fn get_value(&self) -> i32 {
+            self.value
+        }
+    }
+
+    pub struct AsyncClient {
+        client: Arc<BlockingClient>,
+    }
+
+    #[tokio::test]
+    async fn test_custom_field() {
+        let svc = AsyncClient {
+            client: Arc::new(BlockingClient { value: 123 }),
+        };
+        assert_eq!(svc.get_value().await.unwrap(), 123);
+    }
+
+    struct BlockingService;
+
+    #[blocking_impl(AsyncService, strategy = "block_in_place", field = "svc")]
+    impl BlockingService {
+        #[async_wrap]
+        pub fn ping(&self) -> &'static str {
+            "pong"
+        }
+    }
+
+    pub struct AsyncService {
+        svc: BlockingService,
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_custom_field_with_strategy() {
+        let svc = AsyncService {
+            svc: BlockingService,
+        };
+        assert_eq!(svc.ping().await, "pong");
+    }
+}
+
 mod basic_wrapping {
     use super::*;
 
