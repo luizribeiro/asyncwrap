@@ -1,0 +1,5 @@
+error: #[async_wrap] requires `&self`, not `&mut self`
+ --> ui/mut_self.rs:8:23
+  |
+8 |     pub fn bad_method(&mut self) -> i32 {
+  |                       ^^^^^^^^^

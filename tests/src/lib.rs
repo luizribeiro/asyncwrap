@@ -422,3 +422,9 @@ mod task_panic {
         assert_eq!(result.unwrap(), 42);
     }
 }
+
+#[test]
+fn ui() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("ui/*.rs");
+}

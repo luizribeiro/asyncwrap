@@ -1,0 +1,5 @@
+error: #[async_wrap] requires `&self`, not `self`
+ --> ui/move_self.rs:8:23
+  |
+8 |     pub fn bad_method(self) -> i32 {
+  |                       ^^^^

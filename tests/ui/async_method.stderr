@@ -1,0 +1,5 @@
+error: #[async_wrap] cannot be used on async methods
+ --> ui/async_method.rs:8:9
+  |
+8 |     pub async fn bad_method(&self) -> i32 {
+  |         ^^^^^

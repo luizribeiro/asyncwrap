@@ -1,0 +1,5 @@
+error: #[async_wrap] requires methods taking `&self`
+ --> ui/no_self.rs:8:9
+  |
+8 |     pub fn bad_method() -> i32 {
+  |         ^^^^^^^^^^^^^^^^^^^^^^

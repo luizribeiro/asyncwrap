@@ -48,31 +48,8 @@ pub fn async_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
         return item;
     };
 
-    if method.sig.asyncness.is_some() {
-        return syn::Error::new_spanned(
-            method.sig.asyncness,
-            "#[async_wrap] cannot be used on async methods",
-        )
-        .to_compile_error()
-        .into();
-    }
-
-    if let Some(first_arg) = method.sig.inputs.first() {
-        if !is_self_by_ref(first_arg) {
-            return syn::Error::new_spanned(
-                first_arg,
-                "#[async_wrap] requires methods taking `&self` (not `&mut self` or `self`)",
-            )
-            .to_compile_error()
-            .into();
-        }
-    } else {
-        return syn::Error::new_spanned(
-            &method.sig,
-            "#[async_wrap] requires methods taking `&self`",
-        )
-        .to_compile_error()
-        .into();
+    if let Err(e) = validate_async_wrap_method(&method) {
+        return e.to_compile_error().into();
     }
 
     item
@@ -142,6 +119,35 @@ fn remove_async_wrap_attr(method: &mut ImplItemFn) {
 
 fn is_self_by_ref(arg: &FnArg) -> bool {
     matches!(arg, FnArg::Receiver(r) if r.reference.is_some() && r.mutability.is_none())
+}
+
+fn validate_async_wrap_method(method: &ImplItemFn) -> syn::Result<()> {
+    if method.sig.asyncness.is_some() {
+        return Err(syn::Error::new_spanned(
+            method.sig.asyncness,
+            "#[async_wrap] cannot be used on async methods",
+        ));
+    }
+
+    match method.sig.inputs.first() {
+        Some(arg) if is_self_by_ref(arg) => Ok(()),
+        Some(FnArg::Receiver(r)) if r.mutability.is_some() => Err(syn::Error::new_spanned(
+            r,
+            "#[async_wrap] requires `&self`, not `&mut self`",
+        )),
+        Some(FnArg::Receiver(r)) if r.reference.is_none() => Err(syn::Error::new_spanned(
+            r,
+            "#[async_wrap] requires `&self`, not `self`",
+        )),
+        Some(arg) => Err(syn::Error::new_spanned(
+            arg,
+            "#[async_wrap] requires methods taking `&self`",
+        )),
+        None => Err(syn::Error::new_spanned(
+            &method.sig,
+            "#[async_wrap] requires methods taking `&self`",
+        )),
+    }
 }
 
 fn is_result_type(ty: &Type) -> bool {
@@ -307,16 +313,28 @@ pub fn blocking_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let generic_params: Vec<_> = generics.params.iter().collect();
 
     let mut async_methods = Vec::new();
+    let mut errors = Vec::new();
 
     for item in &mut input.items {
         if let ImplItem::Fn(method) = item {
             if has_async_wrap_attr(method) {
-                if let Some(info) = extract_method_info(method) {
+                if let Err(e) = validate_async_wrap_method(method) {
+                    errors.push(e);
+                } else if let Some(info) = extract_method_info(method) {
                     async_methods.push(generate_async_method(&info, args.strategy));
                 }
                 remove_async_wrap_attr(method);
             }
         }
+    }
+
+    if !errors.is_empty() {
+        let compile_errors = errors.into_iter().map(|e| e.to_compile_error());
+        return quote! {
+            #input
+            #(#compile_errors)*
+        }
+        .into();
     }
 
     let async_impl = if generic_params.is_empty() {

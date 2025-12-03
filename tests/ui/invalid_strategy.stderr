@@ -1,0 +1,5 @@
+error: unknown strategy "invalid", expected "spawn_blocking" or "block_in_place"
+ --> ui/invalid_strategy.rs:5:41
+  |
+5 | #[blocking_impl(AsyncClient, strategy = "invalid")]
+  |                                         ^^^^^^^^^

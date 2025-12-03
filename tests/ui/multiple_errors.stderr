@@ -1,0 +1,11 @@
+error: #[async_wrap] requires `&self`, not `&mut self`
+ --> ui/multiple_errors.rs:8:23
+  |
+8 |     pub fn mut_method(&mut self) -> i32 {
+  |                       ^^^^^^^^^
+
+error: #[async_wrap] cannot be used on async methods
+  --> ui/multiple_errors.rs:13:9
+   |
+13 |     pub async fn async_method(&self) -> i32 {
+   |         ^^^^^
