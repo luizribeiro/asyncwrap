@@ -94,7 +94,7 @@ mod block_in_place_strategy {
         let svc = AsyncUnitService {
             inner: UnitService,
         };
-        svc.do_nothing().await;
+        let () = svc.do_nothing().await;
     }
 }
 

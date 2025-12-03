@@ -252,6 +252,7 @@ fn generate_async_method(info: &MethodInfo, strategy: Strategy, field: &Ident) -
 
             quote! {
                 #(#doc_attrs)*
+                #[must_use = "futures do nothing unless you `.await` or poll them"]
                 #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
                     #body
                 }
@@ -265,6 +266,7 @@ fn generate_async_method(info: &MethodInfo, strategy: Strategy, field: &Ident) -
 
             quote! {
                 #(#doc_attrs)*
+                #[must_use = "futures do nothing unless you `.await` or poll them"]
                 #vis async fn #name(&self, #(#arg_names: #arg_types),*) #return_type {
                     ::tokio::task::block_in_place(|| self.#field.#name(#(#arg_names),*))
                 }
